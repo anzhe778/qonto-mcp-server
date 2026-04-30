@@ -28,6 +28,16 @@ qonto_mcp.setup_qonto_config()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def _try_set(obj, name, value):
+    """Try setting attribute, swallowing AttributeError / ValidationError."""
+    try:
+        setattr(obj, name, value)
+        return True
+    except Exception:
+        return False
+
+
 if __name__ == "__main__":
     # --- argument parsing ---------------------------------------------------
     parser = argparse.ArgumentParser(
@@ -86,14 +96,32 @@ if __name__ == "__main__":
         f"Configured bind: host={bind_host} port={bind_port} transport={args.transport}"
     )
 
-    # Mutate mcp.settings if available (covers most SDK versions)
+    # Apply settings via every name we know — covers older + newer SDKs.
     if args.transport == "streamable-http":
-        try:
-            mcp.settings.host = bind_host
-            mcp.settings.port = bind_port
-            logger.info("Applied bind via mcp.settings.")
-        except Exception as e:
-            logger.warning(f"Could not set mcp.settings host/port: {e}")
+        applied = []
+        if _try_set(mcp.settings, "host", bind_host):
+            applied.append("host")
+        if _try_set(mcp.settings, "port", bind_port):
+            applied.append("port")
+        # Disable Host-header / DNS-rebinding check if the SDK exposes a knob
+        for name in (
+            "allowed_hosts",
+            "trusted_hosts",
+            "streamable_http_allowed_hosts",
+            "validate_host_header",
+            "host_validation",
+            "dns_rebinding_protection",
+        ):
+            if name in ("validate_host_header", "host_validation", "dns_rebinding_protection"):
+                _try_set(mcp.settings, name, False)
+            else:
+                _try_set(mcp.settings, name, ["*"])
+        # Also expose the public URL Cloudflare sees, in case the SDK uses it
+        public_url = os.getenv("MCP_PUBLIC_URL")
+        if public_url:
+            for name in ("server_url", "public_url", "streamable_http_url"):
+                _try_set(mcp.settings, name, public_url)
+        logger.info(f"Applied bind via mcp.settings ({', '.join(applied) or 'none'}).")
 
     # Run — try with kwargs first (newer SDKs), fall back to bare call
     try:
